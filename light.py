@@ -76,7 +76,7 @@ class RenaLight(LightEntity):
 
         self._sock.sendto(
             bytes(
-                f"@FADE( {self._pdc}, {fade_time_ms} ) SOLL {{ {self._channel}={int(self._brightness / 2.55)} }}",
+                f"@FADE( {self._pdc}, {fade_time_ms} ) SOLL {{ {self._channel}={int(self._brightness / 2.55)} }}\n",
                 "ascii",
             ),
             (self._host, 50000),
