@@ -4,6 +4,7 @@
   "codeowners": ["@Boudewijn26"],
   "dependencies": [],
   "documentation": "https://www.home-assistant.io/integrations/foundation0",
+  "issue_tracker": "https://github.com/foundation-zero/homeassistant-b2p/issues",
   "homekit": {},
   "iot_class": "local_polling",
   "requirements": [],
