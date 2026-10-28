@@ -1,7 +1,4 @@
-import asyncio
 import logging
-import socket
-from time import monotonic
 
 import voluptuous as vol
 
@@ -11,25 +8,24 @@ from homeassistant.components.light import (
     ColorMode,
     LightEntity,
 )
-from homeassistant.const import CONF_NAME, STATE_OFF, STATE_ON
+from homeassistant.const import CONF_NAME, STATE_OFF, STATE_ON, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import restore_state
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .const import (
-    B2P_FADE_TIME,
-    B2P_PDC_THROTTLE,
     CONF_B2P_CHANNEL,
     CONF_B2P_HOST,
     CONF_B2P_PDC,
     B2P_RESTORE_SAVE_DELAY,
-    DATA_PDC,
     DATA_RESTORE_SAVER,
     DOMAIN,
 )
+from .hub import B2pPdc, async_get_hub
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,23 +39,28 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA_BASE.extend(
 )
 
 
-def _pdc_id(host: str, pdc: int) -> str:
-    return f"{host}_{pdc}"
-
-
-def setup_platform(
+async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
-    add_entities: AddEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    pdcs: dict[str, B2pPdc] = hass.data.get(DATA_PDC, {})
-    pdc_id = _pdc_id(config[CONF_B2P_HOST], config[CONF_B2P_PDC])
-    pdc = pdcs.get(pdc_id) or B2pPdc(config[CONF_B2P_HOST], config[CONF_B2P_PDC])
-    pdcs[pdc_id] = pdc
-    hass.data[DATA_PDC] = pdcs
+    hub = async_get_hub(hass)
+    await hub.async_start()
+    pdc, created = hub.get_or_create_pdc(config[CONF_B2P_HOST], config[CONF_B2P_PDC])
+    if created:
+        pdc.probe()
+        hass.async_create_task(
+            async_load_platform(
+                hass,
+                Platform.BINARY_SENSOR,
+                DOMAIN,
+                {CONF_B2P_HOST: pdc.host, CONF_B2P_PDC: pdc.number},
+                {},
+            )
+        )
 
-    add_entities(
+    async_add_entities(
         [
             B2pLight(
                 config[CONF_NAME],
@@ -68,57 +69,6 @@ def setup_platform(
             )
         ]
     )
-
-
-class B2pPdc:
-    """Representation of a B2P PDC.
-
-    Keeps track of the channels to prevent overloading PDC with too many commands.
-    """
-
-    def __init__(self, host: str, pdc: int) -> None:
-        self._host = host
-        self._pdc = pdc
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._brightnesses: dict[int, int] = {}
-        self._last_message = 0
-        self._is_scheduled = False
-
-    async def set_brightness(self, channel: int, brightness: int) -> None:
-        """Set the brightness of a channel."""
-        time_since_last_message = monotonic() - self._last_message
-        self._brightnesses[channel] = brightness
-        if (
-            not self._is_scheduled
-        ):  # if already scheduled, rely on that update to send brightness
-            # negative sleeps execute immediately
-            self._is_scheduled = True
-            try:
-                await asyncio.sleep(B2P_PDC_THROTTLE - time_since_last_message)
-                channels = [
-                    f"{channel}={int(brightness / 2.55)}"
-                    for channel, brightness in self._brightnesses.items()
-                ]
-                self._sock.sendto(
-                    bytes(
-                        f"@FADE( {self._pdc}, {int(B2P_FADE_TIME * 1000)} ) SOLL {{ {", ".join(channels)} }}\n",
-                        "ascii",
-                    ),
-                    (self._host, 50000),
-                )
-                self._last_message = monotonic()
-            except OSError as err:
-                # e.g. network not up yet right after a power outage
-                _LOGGER.warning("Could not send to PDC %s: %s", self.id, err)
-            finally:
-                self._is_scheduled = False
-
-    def brightness(self, channel: int) -> int:
-        return self._brightnesses.get(channel, 0)
-
-    @property
-    def id(self):
-        return _pdc_id(self._host, self._pdc)
 
 
 class B2pLight(RestoreEntity, LightEntity):
